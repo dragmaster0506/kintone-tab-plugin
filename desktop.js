@@ -21,6 +21,9 @@
   const rawConfig = kintone.plugin.app.getConfig(PLUGIN_ID) || {};
   const CONFIG = {
     tabSpaceId: rawConfig.tabSpaceId || 'tab_space', // タブバーを置くスペースの要素ID
+    // 設定画面でチェックされた「タブの境目ラベル」の要素ID一覧
+    // （カンマ区切り文字列で保存されているので配列に変換）
+    tabLabelIds: (rawConfig.tabLabelIds || '').split(',').filter(Boolean),
     showAllTab: rawConfig.showAllTab !== 'false',     // 「すべて表示」タブを出すか
     allTabName: rawConfig.allTabName || 'すべて',     // 「すべて表示」タブの名前
     keyboardShortcut: rawConfig.keyboardShortcut !== 'false', // Ctrl+←→を使うか
@@ -161,8 +164,11 @@
     let currentTab = null;
 
     function handleField(field) {
-      // 要素ID付きラベル ＝ 新しいタブの開始
-      if (field.type === 'LABEL' && field.elementId) {
+      // 設定画面でチェックされたラベル ＝ 新しいタブの開始
+      // チェックされていない要素ID付きラベルは「純粋なラベル」として
+      // 下の共通処理に流れ、属するタブと一緒に表示/非表示される
+      if (field.type === 'LABEL' && field.elementId &&
+          CONFIG.tabLabelIds.indexOf(field.elementId) !== -1) {
         currentTab = {
           name: toPlainText(field.label) || 'タブ' + (tabs.length + 1),
           labelId: field.elementId,
