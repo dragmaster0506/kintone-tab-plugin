@@ -1,0 +1,7 @@
+# 秘密鍵：公開リポジトリに絶対に含めないこと（バックアップは別の場所へ）
+private.ppk
+# ビルド成果物
+plugin.zip
+contents.zip
+.pack-tmp/
+node_modules/

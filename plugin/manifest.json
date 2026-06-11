@@ -1,0 +1,35 @@
+{
+  "manifest_version": 1,
+  "version": 2,
+  "type": "APP",
+  "name": {
+    "ja": "タブ表示プラグイン",
+    "en": "Tab View Plugin"
+  },
+  "description": {
+    "ja": "要素IDを設定したラベルを境目に、レコード画面を自動でタブ表示にします。タブ名はラベルのテキストがそのまま使われます。",
+    "en": "Splits the record form into tabs using labels that have an element ID."
+  },
+  "homepage_url": {
+    "ja": "https://github.com/dragmaster0506/kintone-tab-plugin",
+    "en": "https://github.com/dragmaster0506/kintone-tab-plugin"
+  },
+  "icon": "image/icon.png",
+  "desktop": {
+    "js": [
+      "js/bootstrap.js",
+      "https://dragmaster0506.github.io/kintone-tab-plugin/desktop.js"
+    ]
+  },
+  "mobile": {
+    "js": [
+      "js/bootstrap.js",
+      "https://dragmaster0506.github.io/kintone-tab-plugin/desktop.js"
+    ]
+  },
+  "config": {
+    "html": "html/config.html",
+    "js": ["js/config.js"],
+    "css": ["css/config.css"]
+  }
+}

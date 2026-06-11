@@ -1,0 +1,39 @@
+<div class="ktab-config">
+  <h2 class="ktab-config__title">タブ表示プラグインの設定</h2>
+
+  <p class="ktab-config__guide">
+    フォームの準備：①タブの境目にしたい位置にラベルを置き「要素ID」を設定（タブ名＝ラベルの文字）
+    ②タブバーを表示したい位置にスペースを置き、下記の要素IDを設定
+  </p>
+
+  <div class="ktab-config__row">
+    <label class="ktab-config__label" for="tab-space-id">タブバーを表示するスペースの要素ID</label>
+    <input type="text" id="tab-space-id" class="ktab-config__input" placeholder="tab_space">
+    <p class="ktab-config__note">この要素IDのスペースが無いアプリでは、画面上部のヘッダーに表示されます</p>
+  </div>
+
+  <div class="ktab-config__row">
+    <label class="ktab-config__check">
+      <input type="checkbox" id="show-all-tab">
+      「すべて表示」タブを使う（全フィールドを一度に表示する特別なタブ）
+    </label>
+  </div>
+
+  <div class="ktab-config__row">
+    <label class="ktab-config__label" for="all-tab-name">「すべて表示」タブの名前</label>
+    <input type="text" id="all-tab-name" class="ktab-config__input" placeholder="すべて">
+  </div>
+
+  <div class="ktab-config__row">
+    <label class="ktab-config__check">
+      <input type="checkbox" id="keyboard-shortcut">
+      キーボードでタブ移動（Ctrl + ←／→）を使う
+    </label>
+    <p class="ktab-config__note">文字入力中は反応しません（入力欄の外をクリックしてから操作してください）</p>
+  </div>
+
+  <div class="ktab-config__buttons">
+    <button type="button" id="ktab-save" class="ktab-config__btn ktab-config__btn--save">保存する</button>
+    <button type="button" id="ktab-cancel" class="ktab-config__btn ktab-config__btn--cancel">キャンセル</button>
+  </div>
+</div>
