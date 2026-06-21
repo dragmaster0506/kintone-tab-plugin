@@ -1,50 +1,31 @@
 /**
- * タブ表示プラグイン【A案・追従スクロール版／診断版】
+ * タブ表示プラグイン【モバイルDOM構造 調査版】
  *
- * ■ この診断版の目的
- *   モバイルで表示されない原因を、画面の一番上に出るメッセージで確認する。
- *   コンソールが見られないモバイルでも、何が起きているか目で分かるようにする。
+ * ■ 目的
+ *   モバイルで「境目ラベル」が画面上でどんなHTMLになっているかを調べる。
+ *   要素IDが id 属性に付かないモバイルで、代わりに何を手がかりにできるかを探す。
  *
- * ■ 確認できること
- *   ・イベントが発火したか／モバイル判定が正しいか
- *   ・境目ラベルの「定義」がいくつ見つかったか（設定の読み込み）
- *   ・境目ラベルの「DOM要素」がいくつ見つかったか（ここが0だと表示されない）
- *   ・見つからなかった要素IDはどれか
- *   ・タブバーの設置先スペースが見つかったか
+ * ■ 調べること
+ *   ・タブ名（ラベルのテキスト）を含む要素が画面上にあるか
+ *   ・その要素の tagName・class・各種属性（data-id など）
+ *   ・要素ID／data-id／テキスト一致 のどれで取得できるか
  *
  * ■ 使い方
  *   GitHub の desktop.js をこの中身に差し替えてモバイルで開く。
- *   画面上部に出る黄色いメッセージ欄を読んで、報告してください。
- *   原因が分かったら、診断メッセージを消した正式版に直します。
+ *   画面上部の黄色い欄に出る内容を、そのまま教えてください（写真でもOK）。
  */
 (function (PLUGIN_ID) {
   'use strict';
 
   const rawConfig = kintone.plugin.app.getConfig(PLUGIN_ID) || {};
   const CONFIG = {
-    tabSpaceId: rawConfig.tabSpaceId || 'tab_space',
     tabLabelIds: (rawConfig.tabLabelIds || '').split(',').filter(Boolean),
-    keyboardShortcut: rawConfig.keyboardShortcut !== 'false',
   };
 
-  const TAB_BAR_ID = 'ktab-bar';
-  const STYLE_ID = 'ktab-style';
   const DEBUG_ID = 'ktab-debug';
 
-  const FIXED_TOP_PC = 48;
-  const FIXED_TOP_MOBILE = 48;
-  const SCROLL_MARGIN = 60;
-
-  const state = {
-    bar: null,
-    placeholder: null,
-    isMobile: false,
-    tabs: [],
-    activeIndex: 0,
-  };
-
   // ============================================================
-  // ▼▼▼ 診断メッセージを画面に出す（この版だけの機能）▼▼▼
+  // 診断メッセージを画面に出す
   // ============================================================
   function debugLog(text) {
     let box = document.getElementById(DEBUG_ID);
@@ -55,11 +36,10 @@
         'position: fixed; top: 0; left: 0; right: 0; z-index: 99999;',
         'background: #fff3cd; color: #664d03;',
         'border-bottom: 2px solid #ffc107;',
-        'padding: 8px 12px; font-size: 13px; line-height: 1.6;',
+        'padding: 8px 12px; font-size: 12px; line-height: 1.5;',
         'font-family: sans-serif; white-space: pre-wrap;',
-        'max-height: 50vh; overflow-y: auto;',
+        'max-height: 70vh; overflow-y: auto;',
       ].join('');
-      // 閉じるボタン
       const close = document.createElement('button');
       close.textContent = '✕ 閉じる';
       close.style.cssText = 'float:right; margin-left:8px; padding:2px 8px; cursor:pointer;';
@@ -71,135 +51,6 @@
     line.textContent = text;
     box.appendChild(line);
   }
-  // ============================================================
-
-  function injectStyle() {
-    if (document.getElementById(STYLE_ID)) return;
-    const css = [
-      '#' + TAB_BAR_ID + ' {',
-      '  display: flex; align-items: flex-end; gap: 2px; flex-wrap: wrap;',
-      '  width: 100%; box-sizing: border-box;',
-      '  padding: 8px 8px 0;',
-      '  border-bottom: 2px solid #1e73be;',
-      '}',
-      '.ktab-btn {',
-      '  padding: 9px 22px; font-size: 14px;',
-      '  color: #767676; background: #eef1f3;',
-      '  border: 1px solid #d4d4d4; border-bottom: none;',
-      '  border-radius: 6px 6px 0 0;',
-      '  cursor: pointer; white-space: nowrap;',
-      '}',
-      '.ktab-btn:hover { background: #e2e6e9; }',
-      '.ktab-btn--active, .ktab-btn--active:hover {',
-      '  background: #1e73be; color: #ffffff;',
-      '  border-color: #1e73be; font-weight: bold;',
-      '}',
-      '.ktab-bar--fixed {',
-      '  position: fixed; left: 0; right: 0; z-index: 100;',
-      '  background: #ffffff;',
-      '  box-shadow: 0 2px 5px rgba(0,0,0,0.15);',
-      '}',
-      '#' + TAB_BAR_ID + '.ktab-bar--mobile {',
-      '  flex-wrap: nowrap;',
-      '  overflow-x: auto;',
-      '  -webkit-overflow-scrolling: touch;',
-      '}',
-      '#' + TAB_BAR_ID + '.ktab-bar--mobile .ktab-btn {',
-      '  flex: 0 0 auto;',
-      '}',
-    ].join('\n');
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = css;
-    document.head.appendChild(style);
-  }
-
-  function onScroll() {
-    updateFixed();
-    updateActiveTab();
-  }
-
-  function updateFixed() {
-    const bar = state.bar;
-    const ph = state.placeholder;
-    if (!bar || !ph || !document.body.contains(ph)) return;
-    const topOffset = state.isMobile ? FIXED_TOP_MOBILE : FIXED_TOP_PC;
-    const phTop = ph.getBoundingClientRect().top;
-    if (phTop < topOffset) {
-      if (!bar.classList.contains('ktab-bar--fixed')) {
-        ph.style.height = bar.offsetHeight + 'px';
-        bar.classList.add('ktab-bar--fixed');
-        bar.style.top = topOffset + 'px';
-      }
-    } else {
-      if (bar.classList.contains('ktab-bar--fixed')) {
-        bar.classList.remove('ktab-bar--fixed');
-        bar.style.top = '';
-        ph.style.height = '0px';
-      }
-    }
-  }
-
-  function updateActiveTab() {
-    const tabs = state.tabs;
-    if (!tabs.length) return;
-    const topOffset = state.isMobile ? FIXED_TOP_MOBILE : FIXED_TOP_PC;
-    const line = topOffset + SCROLL_MARGIN;
-    let current = 0;
-    for (let i = 0; i < tabs.length; i++) {
-      const el = tabs[i].anchorEl;
-      if (!el || !document.body.contains(el)) continue;
-      const top = el.getBoundingClientRect().top;
-      if (top - line <= 1) {
-        current = i;
-      } else {
-        break;
-      }
-    }
-    if (current !== state.activeIndex) {
-      state.activeIndex = current;
-      updateTabStyles(current);
-    }
-  }
-
-  function attachScrollListeners() {
-    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
-    window.addEventListener('resize', onScroll, { passive: true });
-    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
-  }
-  attachScrollListeners();
-
-  function jumpToTab(index) {
-    const tab = state.tabs[index];
-    if (!tab || !tab.anchorEl || !document.body.contains(tab.anchorEl)) return;
-    const topOffset = state.isMobile ? FIXED_TOP_MOBILE : FIXED_TOP_PC;
-    const rectTop = tab.anchorEl.getBoundingClientRect().top;
-    const currentScroll = window.pageYOffset || document.documentElement.scrollTop || 0;
-    const targetY = rectTop + currentScroll - topOffset - SCROLL_MARGIN;
-    window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
-    state.activeIndex = index;
-    updateTabStyles(index);
-  }
-
-  function isTypingTarget(el) {
-    if (!el) return false;
-    const tag = (el.tagName || '').toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select' ||
-      el.isContentEditable === true;
-  }
-
-  document.addEventListener('keydown', function (e) {
-    if (!CONFIG.keyboardShortcut) return;
-    if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    if (isTypingTarget(e.target)) return;
-    const tabs = state.tabs;
-    if (!tabs.length || !state.bar || !document.body.contains(state.bar)) return;
-    e.preventDefault();
-    const direction = (e.key === 'ArrowRight') ? 1 : -1;
-    const nextIndex = (state.activeIndex + direction + tabs.length) % tabs.length;
-    jumpToTab(nextIndex);
-  });
 
   function getAppId(isMobile) {
     return isMobile ? kintone.mobile.app.getId() : kintone.app.getId();
@@ -219,158 +70,108 @@
     return (doc.body.textContent || '').trim();
   }
 
-  function findAnchorElement(elementId) {
-    let el = document.getElementById(elementId);
-    if (el) return el;
-    el = document.querySelector('[data-id="' + elementId + '"]');
-    return el || null;
-  }
-
-  function collectTabDefs(layout) {
-    const defs = [];
+  // ▼ 設定された境目ラベルの「要素ID・テキスト」を集める
+  function collectLabelItems(layout) {
+    const items = [];
     layout.forEach(function (row) {
       if (row.type !== 'ROW') return;
       row.fields.forEach(function (field) {
         if (field.type === 'LABEL' && field.elementId &&
             CONFIG.tabLabelIds.indexOf(field.elementId) !== -1) {
-          defs.push({
-            name: toPlainText(field.label) || 'タブ' + (defs.length + 1),
-            labelId: field.elementId,
+          items.push({
+            id: field.elementId,
+            text: toPlainText(field.label),
           });
         }
       });
     });
-    return defs;
+    return items;
   }
 
-  function buildTabs(defs) {
-    const tabs = [];
-    const notFound = []; // ▼ 診断用：見つからなかった要素ID
-    defs.forEach(function (def) {
-      const anchorEl = findAnchorElement(def.labelId);
-      if (!anchorEl) {
-        notFound.push(def.labelId);
-        return;
+  // ▼ あるテキストを「ちょうど持っている」一番内側の要素を画面から探す
+  //   （子に同じテキストが無い、できるだけ内側の要素を選ぶ）
+  function findElementByText(text) {
+    if (!text) return null;
+    const all = document.querySelectorAll('div, span, p, label, strong, b, h3, h4');
+    let best = null;
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      const t = (el.textContent || '').trim();
+      if (t === text) {
+        best = el; // 後に出てくる（より内側の）要素で上書きしていく
       }
-      tabs.push({ name: def.name, labelId: def.labelId, anchorEl: anchorEl });
-    });
-    // ▼ 診断：見つからなかったIDを報告
-    if (notFound.length > 0) {
-      debugLog('④ DOM要素が見つからないラベルID: ' + notFound.join(', '));
     }
-    return tabs;
+    return best;
   }
 
-  function updateTabStyles(activeIndex) {
-    if (!state.bar) return;
-    state.bar.querySelectorAll('.ktab-btn').forEach(function (btn, index) {
-      btn.classList.toggle('ktab-btn--active', index === activeIndex);
-    });
-  }
-
-  function createTabBar(isMobile, tabs) {
-    injectStyle();
-    const oldBar = document.getElementById(TAB_BAR_ID);
-    if (oldBar) oldBar.remove();
-    const oldPh = document.getElementById(TAB_BAR_ID + '-ph');
-    if (oldPh) oldPh.remove();
-
-    let space = isMobile
-      ? kintone.mobile.app.record.getSpaceElement(CONFIG.tabSpaceId)
-      : kintone.app.record.getSpaceElement(CONFIG.tabSpaceId);
-
-    let usedFallback = false; // ▼ 診断用
-    if (!space) {
-      usedFallback = true;
-      space = isMobile
-        ? kintone.mobile.app.getHeaderSpaceElement()
-        : kintone.app.record.getHeaderMenuSpaceElement();
+  // ▼ 要素の特徴（タグ・id・class・data-*属性）を文字にする
+  function describe(el) {
+    if (!el) return '（見つからず）';
+    const attrs = [];
+    if (el.id) attrs.push('id="' + el.id + '"');
+    if (el.className && typeof el.className === 'string') {
+      attrs.push('class="' + el.className + '"');
     }
-
-    // ▼ 診断：設置先スペースの状況を報告
-    if (!space) {
-      debugLog('⑤ タブバーの設置先スペースが見つかりません（スペースID「' +
-        CONFIG.tabSpaceId + '」もヘッダーもNG）→ ここで表示できず終了');
-      return;
+    if (el.attributes) {
+      for (let i = 0; i < el.attributes.length; i++) {
+        const a = el.attributes[i];
+        if (a.name.indexOf('data-') === 0) {
+          attrs.push(a.name + '="' + a.value + '"');
+        }
+      }
     }
-    debugLog('⑤ 設置先スペース: ' +
-      (usedFallback ? 'ヘッダーにフォールバック設置' : 'スペースID「' + CONFIG.tabSpaceId + '」に設置'));
-
-    space.style.width = '100%';
-
-    const placeholder = document.createElement('div');
-    placeholder.id = TAB_BAR_ID + '-ph';
-    placeholder.style.height = '0px';
-
-    const bar = document.createElement('div');
-    bar.id = TAB_BAR_ID;
-    if (isMobile) bar.classList.add('ktab-bar--mobile');
-
-    tabs.forEach(function (tab, index) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ktab-btn';
-      btn.textContent = tab.name;
-      btn.addEventListener('click', function () {
-        jumpToTab(index);
-      });
-      bar.appendChild(btn);
-    });
-
-    space.appendChild(placeholder);
-    space.appendChild(bar);
-
-    state.bar = bar;
-    state.placeholder = placeholder;
-    state.isMobile = isMobile;
-    state.tabs = tabs;
-
-    debugLog('⑥ タブバー設置完了！ タブ数: ' + tabs.length);
+    return '<' + el.tagName.toLowerCase() + '> ' + attrs.join(' ');
   }
 
   const events = [
-    'app.record.detail.show',
-    'app.record.create.show',
-    'app.record.edit.show',
     'mobile.app.record.detail.show',
     'mobile.app.record.create.show',
     'mobile.app.record.edit.show',
+    'app.record.detail.show',
+    'app.record.create.show',
+    'app.record.edit.show',
   ];
 
   kintone.events.on(events, async function (event) {
     const isMobile = (event.type.indexOf('mobile.') === 0);
 
-    // ▼ 診断：ここまで来たか／モバイル判定／設定の中身
-    debugLog('── 診断開始 ──');
-    debugLog('① イベント発火: ' + event.type + '（モバイル判定: ' + isMobile + '）');
-    debugLog('② 設定のラベルID一覧: ' +
-      (CONFIG.tabLabelIds.length ? CONFIG.tabLabelIds.join(', ') : '（空＝未設定）') +
-      ' / スペースID: ' + CONFIG.tabSpaceId);
+    debugLog('── DOM調査開始 ──');
+    debugLog('イベント: ' + event.type + '（モバイル: ' + isMobile + '）');
 
     try {
       const layout = await getLayout(isMobile);
-      const defs = collectTabDefs(layout);
-      debugLog('③ レイアウトから見つけた境目ラベル定義の数: ' + defs.length);
+      const items = collectLabelItems(layout);
+      debugLog('境目ラベル数: ' + items.length);
 
-      if (defs.length === 0) {
-        debugLog('→ 境目ラベル定義が0件のため終了（設定 or レイアウトを確認）');
-        return event;
-      }
+      items.forEach(function (item, i) {
+        debugLog('━━━━━━━━━━');
+        debugLog('[' + (i + 1) + '] タブ名「' + item.text + '」 要素ID=' + item.id);
 
-      const tabs = buildTabs(defs);
-      if (tabs.length === 0) {
-        debugLog('→ ジャンプ先のDOM要素が1つも見つからず終了（モバイルで要素ID取得に失敗の可能性大）');
-        return event;
-      }
+        // ① 要素IDで探せるか
+        const byId = document.getElementById(item.id);
+        debugLog('  ・getElementById: ' +
+          (byId ? '取得OK → ' + describe(byId) : '取得できず'));
 
-      createTabBar(isMobile, tabs);
+        // ② data-id で探せるか
+        const byData = document.querySelector('[data-id="' + item.id + '"]');
+        debugLog('  ・[data-id]: ' +
+          (byData ? '取得OK → ' + describe(byData) : '取得できず'));
 
-      state.activeIndex = 0;
-      updateTabStyles(0);
-      onScroll();
+        // ③ テキストで探せるか（これが本命の手がかり）
+        const byText = findElementByText(item.text);
+        debugLog('  ・テキスト一致: ' +
+          (byText ? '取得OK → ' + describe(byText) : '取得できず'));
+
+        // ④ テキスト一致した要素の親もヒントになるので見る
+        if (byText && byText.parentElement) {
+          debugLog('    └ 親: ' + describe(byText.parentElement));
+        }
+      });
+
+      debugLog('── 調査おわり ──');
 
     } catch (e) {
-      debugLog('✕ エラー発生: ' + e.message);
+      debugLog('✕ エラー: ' + e.message);
     }
 
     return event;
