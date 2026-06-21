@@ -9,8 +9,10 @@
  * ■ 機能
  *   ・「すべて表示」タブ（設定でON/OFF・名前変更可）
  *   ・スクロール追従（タブバーが画面外に出たら上部に固定表示）
+ *     - PC・モバイル両対応。モバイルは標準ヘッダーの高さぶん下げて固定する。
+ *     - 画面全体だけでなく、スクロールしている要素も監視して確実に発動させる。
  *   ・キーボードでタブ移動（Ctrl + ←／→。設定でON/OFF可）
- *   ・モバイルではタブバーを横1段＋横スクロール表示（折り返して積み重ならない）
+ *   ・モバイルではタブバーを横1段＋横スクロール表示
  */
 (function (PLUGIN_ID) {
   'use strict';
@@ -34,8 +36,10 @@
   const STYLE_ID = 'ktab-style';
 
   // ▼ 固定表示するときの画面上端からの距離（px）
+  //   モバイルは標準ヘッダー（戻る・アプリ名の帯）に重ならないよう下げる。
+  //   機種で多少変わるので、ズレたらこの数値を調整する。
   const FIXED_TOP_PC = 48;
-  const FIXED_TOP_MOBILE = 0;
+  const FIXED_TOP_MOBILE = 48;
 
   // 画面遷移（詳細→編集など）しても同じタブを開いたままにするための記憶
   let lastActiveIndex = 0;
@@ -97,6 +101,7 @@
 
   // ============================================================
   // スクロール追従
+  //   タブバーの元の位置が画面上端（topOffset）より上に行ったら固定する。
   // ============================================================
   function onScroll() {
     const bar = state.bar;
@@ -120,8 +125,20 @@
       }
     }
   }
-  window.addEventListener('scroll', onScroll, { passive: true });
-  window.addEventListener('resize', onScroll, { passive: true });
+
+  // ▼ スクロールを監視する対象を登録する
+  //   kintoneモバイルは「画面全体（window）」ではなく別の要素をスクロール
+  //   させていることがあるため、window に加えてスクロール可能な要素にも
+  //   イベントを登録して、どこが動いても追従が発動するようにする。
+  function attachScrollListeners() {
+    // まずは画面全体
+    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    window.addEventListener('resize', onScroll, { passive: true });
+
+    // capture:true で document 全体のスクロールを拾う（子要素のスクロールも検知）
+    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
+  }
+  attachScrollListeners();
 
   // ============================================================
   // キーボードでタブ移動（Ctrl + ←／→）
@@ -247,6 +264,9 @@
 
     lastActiveIndex = activeIndex;
     updateTabStyles(activeIndex);
+
+    // タブを切り替えたら固定状態を一度見直す（中身の高さが変わるため）
+    onScroll();
   }
 
   function updateTabStyles(activeIndex) {
