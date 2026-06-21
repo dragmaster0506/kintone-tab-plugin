@@ -1,34 +1,34 @@
 /**
- * タブ表示プラグイン 本体（PC・モバイル共通）
+ * タブ表示プラグイン 本体【A案・追従スクロール版（試作）】
+ *
+ * ■ 絞り込み版との違い
+ *   ・フィールドの表示/非表示は一切しない（全フィールドが常に見える）
+ *   ・タブをクリックすると、その境目ラベルの位置まで画面をスクロールする
+ *   ・スクロールに合わせて「今いる位置のタブ」を自動でハイライトする
  *
  * ■ 仕組み
- *   「要素IDが設定されたラベル」をタブの境目として画面を自動分割。
- *   タブ名＝ラベルのテキスト。最初の境目ラベルより上のフィールドは常に表示。
- *   タブバーは設定画面で指定した要素IDのスペースに表示（無ければヘッダーに表示）。
+ *   設定画面でチェックした「要素IDが設定されたラベル」をタブの境目（＝ジャンプ先）にする。
+ *   タブ名＝ラベルのテキスト。タブバーは設定したスペースに表示（無ければヘッダー）。
  *
  * ■ 機能
- *   ・「すべて表示」タブ（設定でON/OFF・名前変更可）
  *   ・スクロール追従（タブバーが画面外に出たら上部に固定表示）
- *     - PC・モバイル両対応。モバイルは標準ヘッダーの高さぶん下げて固定する。
- *     - 画面全体だけでなく、スクロールしている要素も監視して確実に発動させる。
- *   ・キーボードでタブ移動（Ctrl + ←／→。設定でON/OFF可）
+ *   ・キーボードでタブ移動（Ctrl + ←／→。押すとそのタブ位置へジャンプ）
  *   ・モバイルではタブバーを横1段＋横スクロール表示
+ *
+ * ■ 注意（試作版）
+ *   うまく動かない場合は、GitHub の desktop.js を元の絞り込み版に戻せばOK。
  */
 (function (PLUGIN_ID) {
   'use strict';
 
   // ============================================================
-  // 設定画面で保存された値を読み込む（未設定の項目は初期値を使う）
-  // ※設定値はすべて文字列で保存されるので、ON/OFFは 'true'/'false' の文字列比較
+  // 設定画面で保存された値を読み込む（絞り込み版と同じ設定をそのまま使う）
   // ============================================================
   const rawConfig = kintone.plugin.app.getConfig(PLUGIN_ID) || {};
   const CONFIG = {
     tabSpaceId: rawConfig.tabSpaceId || 'tab_space', // タブバーを置くスペースの要素ID
     // 設定画面でチェックされた「タブの境目ラベル」の要素ID一覧
-    // （カンマ区切り文字列で保存されているので配列に変換）
     tabLabelIds: (rawConfig.tabLabelIds || '').split(',').filter(Boolean),
-    showAllTab: rawConfig.showAllTab !== 'false',     // 「すべて表示」タブを出すか
-    allTabName: rawConfig.allTabName || 'すべて',     // 「すべて表示」タブの名前
     keyboardShortcut: rawConfig.keyboardShortcut !== 'false', // Ctrl+←→を使うか
   };
 
@@ -36,20 +36,20 @@
   const STYLE_ID = 'ktab-style';
 
   // ▼ 固定表示するときの画面上端からの距離（px）
-  //   モバイルは標準ヘッダー（戻る・アプリ名の帯）に重ならないよう下げる。
-  //   機種で多少変わるので、ズレたらこの数値を調整する。
   const FIXED_TOP_PC = 48;
   const FIXED_TOP_MOBILE = 48;
 
-  // 画面遷移（詳細→編集など）しても同じタブを開いたままにするための記憶
-  let lastActiveIndex = 0;
+  // ▼ ジャンプ先の位置を、固定タブバーのぶんだけ余分に上に確保する量（px）
+  //   これが無いと、ジャンプ先ラベルが固定タブバーの裏に隠れてしまう。
+  const SCROLL_MARGIN = 60;
 
   // 画面上の要素やタブ構成をまとめて記憶しておく場所
   const state = {
     bar: null,
     placeholder: null,
     isMobile: false,
-    tabs: [],
+    tabs: [],          // { name, labelId, anchorEl } の配列
+    activeIndex: 0,
   };
 
   // ============================================================
@@ -82,7 +82,7 @@
       '  background: #ffffff;',
       '  box-shadow: 0 2px 5px rgba(0,0,0,0.15);',
       '}',
-      // ▼ モバイルだけ横1段＋横スクロール（折り返して積み重ならないようにする）
+      // ▼ モバイルだけ横1段＋横スクロール
       '#' + TAB_BAR_ID + '.ktab-bar--mobile {',
       '  flex-wrap: nowrap;',
       '  overflow-x: auto;',
@@ -100,10 +100,16 @@
   }
 
   // ============================================================
-  // スクロール追従
-  //   タブバーの元の位置が画面上端（topOffset）より上に行ったら固定する。
+  // スクロール処理：①タブバーの固定／解除 ②現在地ハイライト
+  //   絞り込み版は①だけだったが、A案では②も同時にやる。
   // ============================================================
   function onScroll() {
+    updateFixed();      // ①タブバーを固定するか戻すか
+    updateActiveTab();  // ②今いる位置のタブをハイライト
+  }
+
+  // ① タブバーの固定／解除
+  function updateFixed() {
     const bar = state.bar;
     const ph = state.placeholder;
     if (!bar || !ph || !document.body.contains(ph)) return;
@@ -126,19 +132,65 @@
     }
   }
 
-  // ▼ スクロールを監視する対象を登録する
-  //   kintoneモバイルは「画面全体（window）」ではなく別の要素をスクロール
-  //   させていることがあるため、window に加えてスクロール可能な要素にも
-  //   イベントを登録して、どこが動いても追従が発動するようにする。
+  // ② 現在地ハイライト
+  //   各タブの境目ラベルが画面上端からどれくらいの位置にあるかを見て、
+  //   「画面上端の判定ライン」を最後に越えたタブを現在地とする。
+  function updateActiveTab() {
+    const tabs = state.tabs;
+    if (!tabs.length) return;
+
+    const topOffset = state.isMobile ? FIXED_TOP_MOBILE : FIXED_TOP_PC;
+    const line = topOffset + SCROLL_MARGIN; // 判定ライン
+
+    let current = 0;
+    for (let i = 0; i < tabs.length; i++) {
+      const el = tabs[i].anchorEl;
+      if (!el || !document.body.contains(el)) continue;
+      const top = el.getBoundingClientRect().top;
+      // ラベルが判定ラインより上（または同じ位置）まで来ていたら、
+      // そこまでスクロール済み＝そのタブの領域に入っている
+      if (top - line <= 1) {
+        current = i;
+      } else {
+        break; // それより下のタブはまだ到達していない
+      }
+    }
+
+    if (current !== state.activeIndex) {
+      state.activeIndex = current;
+      updateTabStyles(current);
+    }
+  }
+
+  // ▼ スクロールを監視する対象を登録（絞り込み版と同じ・モバイル対策込み）
   function attachScrollListeners() {
-    // まずは画面全体
     window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     window.addEventListener('resize', onScroll, { passive: true });
-
-    // capture:true で document 全体のスクロールを拾う（子要素のスクロールも検知）
     document.addEventListener('scroll', onScroll, { passive: true, capture: true });
   }
   attachScrollListeners();
+
+  // ============================================================
+  // タブをクリック／キー操作したときのジャンプ処理
+  // ============================================================
+  function jumpToTab(index) {
+    const tab = state.tabs[index];
+    if (!tab || !tab.anchorEl || !document.body.contains(tab.anchorEl)) return;
+
+    const topOffset = state.isMobile ? FIXED_TOP_MOBILE : FIXED_TOP_PC;
+
+    // ラベルの現在位置（画面上端基準）＋ 今のスクロール量 ＝ ページ全体での絶対位置
+    const rectTop = tab.anchorEl.getBoundingClientRect().top;
+    const currentScroll = window.pageYOffset || document.documentElement.scrollTop || 0;
+    // 固定タブバーのぶんだけ上に余白をとって、ラベルが隠れないようにする
+    const targetY = rectTop + currentScroll - topOffset - SCROLL_MARGIN;
+
+    window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+
+    // 先に見た目を切り替えておく（スクロール完了後にonScrollでも再調整される）
+    state.activeIndex = index;
+    updateTabStyles(index);
+  }
 
   // ============================================================
   // キーボードでタブ移動（Ctrl + ←／→）
@@ -154,19 +206,22 @@
     if (!CONFIG.keyboardShortcut) return;
     if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    if (isTypingTarget(e.target)) return; // 文字入力中は邪魔しない
+    if (isTypingTarget(e.target)) return;
 
     const tabs = state.tabs;
     if (!tabs.length || !state.bar || !document.body.contains(state.bar)) return;
 
     e.preventDefault();
     const direction = (e.key === 'ArrowRight') ? 1 : -1;
-    const nextIndex = (lastActiveIndex + direction + tabs.length) % tabs.length;
-    showTab(state.isMobile, tabs, nextIndex);
+    const nextIndex = (state.activeIndex + direction + tabs.length) % tabs.length;
+    jumpToTab(nextIndex);
   });
 
   // ============================================================
   // タブ構成の組み立て
+  //   絞り込み版はフォーム「レイアウト情報」から組み立てていたが、
+  //   A案はジャンプ先となる「実際のDOM要素」が必要なので、
+  //   画面上のラベル要素を要素IDで探して anchorEl として持つ。
   // ============================================================
   function getAppId(isMobile) {
     return isMobile ? kintone.mobile.app.getId() : kintone.app.getId();
@@ -186,89 +241,57 @@
     return (doc.body.textContent || '').trim();
   }
 
-  function buildTabs(layout) {
-    const tabs = [];
-    let currentTab = null;
+  // ▼ 要素IDから、画面上の実際のDOM要素を探す
+  //   kintoneではラベルの「要素ID」が id 属性になる想定。
+  //   取れない場合のフォールバックとして data-id も試す。
+  function findAnchorElement(elementId) {
+    let el = document.getElementById(elementId);
+    if (el) return el;
+    el = document.querySelector('[data-id="' + elementId + '"]');
+    return el || null;
+  }
 
-    function handleField(field) {
-      // 設定画面でチェックされたラベル ＝ 新しいタブの開始
-      // チェックされていない要素ID付きラベルは「純粋なラベル」として
-      // 下の共通処理に流れ、属するタブと一緒に表示/非表示される
-      if (field.type === 'LABEL' && field.elementId &&
-          CONFIG.tabLabelIds.indexOf(field.elementId) !== -1) {
-        currentTab = {
-          name: toPlainText(field.label) || 'タブ' + (tabs.length + 1),
-          labelId: field.elementId,
-          codes: [],
-        };
-        tabs.push(currentTab);
-        return;
-      }
-      // タブバー設置用のスペースは切り替え対象から除外
-      if (field.type === 'SPACER' && field.elementId === CONFIG.tabSpaceId) {
-        return;
-      }
-      const id = field.code || field.elementId;
-      if (id && currentTab) {
-        currentTab.codes.push(id);
-      }
-    }
-
+  // ▼ レイアウト情報から「境目ラベルの要素ID・タブ名」の一覧を作る
+  //   （順番を保つためにレイアウトの並び順で集める）
+  function collectTabDefs(layout) {
+    const defs = [];
     layout.forEach(function (row) {
-      if (row.type === 'ROW') {
-        row.fields.forEach(handleField);
-      } else if (row.type === 'GROUP' || row.type === 'SUBTABLE') {
-        if (currentTab && row.code) {
-          currentTab.codes.push(row.code);
+      if (row.type !== 'ROW') return;
+      row.fields.forEach(function (field) {
+        if (field.type === 'LABEL' && field.elementId &&
+            CONFIG.tabLabelIds.indexOf(field.elementId) !== -1) {
+          defs.push({
+            name: toPlainText(field.label) || 'タブ' + (defs.length + 1),
+            labelId: field.elementId,
+          });
         }
-      }
+      });
     });
+    return defs;
+  }
 
-    // 「すべて表示」タブを末尾に追加（設定でONのときだけ）
-    if (CONFIG.showAllTab && tabs.length > 0) {
-      tabs.push({ isAll: true, name: CONFIG.allTabName });
-    }
-
+  // ▼ 境目ラベルの定義 ＋ 実際のDOM要素 を結びつけてタブを完成させる
+  function buildTabs(defs) {
+    const tabs = [];
+    defs.forEach(function (def) {
+      const anchorEl = findAnchorElement(def.labelId);
+      if (!anchorEl) {
+        // DOM要素が見つからないラベルはジャンプできないのでスキップ
+        console.warn('タブのジャンプ先が見つかりません（スキップ）:', def.labelId);
+        return;
+      }
+      tabs.push({
+        name: def.name,
+        labelId: def.labelId,
+        anchorEl: anchorEl,
+      });
+    });
     return tabs;
   }
 
   // ============================================================
-  // 表示の切り替え
+  // タブの見た目（ハイライト）の更新
   // ============================================================
-  function setFieldShown(isMobile, code, isShown) {
-    try {
-      if (isMobile) {
-        kintone.mobile.app.record.setFieldShown(code, isShown);
-      } else {
-        kintone.app.record.setFieldShown(code, isShown);
-      }
-    } catch (e) {
-      console.warn('表示切替スキップ:', code, e.message);
-    }
-  }
-
-  function showTab(isMobile, tabs, activeIndex) {
-    const isAllMode = !!tabs[activeIndex].isAll;
-
-    tabs.forEach(function (tab, index) {
-      if (tab.isAll) return;
-
-      // 境目ラベル：すべて表示中は「見出し」として出す／通常は隠す
-      setFieldShown(isMobile, tab.labelId, isAllMode);
-
-      const isShown = isAllMode || (index === activeIndex);
-      tab.codes.forEach(function (code) {
-        setFieldShown(isMobile, code, isShown);
-      });
-    });
-
-    lastActiveIndex = activeIndex;
-    updateTabStyles(activeIndex);
-
-    // タブを切り替えたら固定状態を一度見直す（中身の高さが変わるため）
-    onScroll();
-  }
-
   function updateTabStyles(activeIndex) {
     if (!state.bar) return;
     state.bar.querySelectorAll('.ktab-btn').forEach(function (btn, index) {
@@ -308,7 +331,7 @@
 
     const bar = document.createElement('div');
     bar.id = TAB_BAR_ID;
-    if (isMobile) bar.classList.add('ktab-bar--mobile'); // モバイルは横1段＋横スクロール
+    if (isMobile) bar.classList.add('ktab-bar--mobile');
 
     tabs.forEach(function (tab, index) {
       const btn = document.createElement('button');
@@ -316,7 +339,7 @@
       btn.className = 'ktab-btn';
       btn.textContent = tab.name;
       btn.addEventListener('click', function () {
-        showTab(isMobile, tabs, index);
+        jumpToTab(index);
       });
       bar.appendChild(btn);
     });
@@ -347,16 +370,24 @@
 
     try {
       const layout = await getLayout(isMobile);
-      const tabs = buildTabs(layout);
-      if (tabs.length === 0) return event; // 境目ラベルが無いアプリでは何もしない
+      const defs = collectTabDefs(layout);
+      if (defs.length === 0) return event; // 境目ラベルが無いアプリでは何もしない
+
+      const tabs = buildTabs(defs);
+      if (tabs.length === 0) {
+        console.warn('ジャンプ先のラベル要素が画面上に見つかりませんでした。');
+        return event;
+      }
 
       createTabBar(isMobile, tabs);
 
-      const startIndex = (lastActiveIndex < tabs.length) ? lastActiveIndex : 0;
-      showTab(isMobile, tabs, startIndex);
+      // 初期ハイライトを今のスクロール位置に合わせる
+      state.activeIndex = 0;
+      updateTabStyles(0);
+      onScroll();
 
     } catch (e) {
-      console.error('タブ表示プラグインの初期化に失敗しました:', e);
+      console.error('タブ表示プラグイン（追従版）の初期化に失敗しました:', e);
     }
 
     return event;
