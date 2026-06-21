@@ -10,8 +10,7 @@
  *   ・「すべて表示」タブ（設定でON/OFF・名前変更可）
  *   ・スクロール追従（タブバーが画面外に出たら上部に固定表示）
  *   ・キーボードでタブ移動（Ctrl + ←／→。設定でON/OFF可）
- *   ・タブ切り替え時はタブバー位置まで自動で戻す（中身の高さ差によるガタつき防止）
- *   ・モバイルではタブバーを折り返し表示（横スクロールしないので「戻るスワイプ」と干渉しない）
+ *   ・モバイルではタブバーを横1段＋横スクロール表示（折り返して積み重ならない）
  */
 (function (PLUGIN_ID) {
   'use strict';
@@ -79,10 +78,14 @@
       '  background: #ffffff;',
       '  box-shadow: 0 2px 5px rgba(0,0,0,0.15);',
       '}',
-      // ▼ モバイルは折り返し表示。横スクロールしないので「戻るスワイプ」と干渉しない。
-      //   タブ同士の縦の隙間を少し空けて、2段になっても見やすくする。
+      // ▼ モバイルだけ横1段＋横スクロール（折り返して積み重ならないようにする）
       '#' + TAB_BAR_ID + '.ktab-bar--mobile {',
-      '  row-gap: 4px;',
+      '  flex-wrap: nowrap;',
+      '  overflow-x: auto;',
+      '  -webkit-overflow-scrolling: touch;',
+      '}',
+      '#' + TAB_BAR_ID + '.ktab-bar--mobile .ktab-btn {',
+      '  flex: 0 0 auto;',
       '}',
     ].join('\n');
 
@@ -244,14 +247,6 @@
 
     lastActiveIndex = activeIndex;
     updateTabStyles(activeIndex);
-
-    // ▼ タブ切り替え後はタブバーの位置まで戻す
-    //   長いタブで下まで見た後に短いタブへ切り替えると、ページが急に縮んで
-    //   スクロール位置が下基準に押し戻され、タブバーが下がって見える現象を防ぐ。
-    //   behavior:'auto'（瞬間移動）にして、切り替えのたびにスーッと動かないようにする。
-    if (state.bar) {
-      state.bar.scrollIntoView({ block: 'start', behavior: 'auto' });
-    }
   }
 
   function updateTabStyles(activeIndex) {
@@ -293,7 +288,7 @@
 
     const bar = document.createElement('div');
     bar.id = TAB_BAR_ID;
-    if (isMobile) bar.classList.add('ktab-bar--mobile'); // モバイルは折り返し表示
+    if (isMobile) bar.classList.add('ktab-bar--mobile'); // モバイルは横1段＋横スクロール
 
     tabs.forEach(function (tab, index) {
       const btn = document.createElement('button');
