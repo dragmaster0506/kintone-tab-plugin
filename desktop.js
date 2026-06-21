@@ -10,6 +10,7 @@
  *   ・「すべて表示」タブ（設定でON/OFF・名前変更可）
  *   ・スクロール追従（タブバーが画面外に出たら上部に固定表示）
  *   ・キーボードでタブ移動（Ctrl + ←／→。設定でON/OFF可）
+ *   ・モバイルではタブバーを横1段＋横スクロール表示（折り返して積み重ならない）
  */
 (function (PLUGIN_ID) {
   'use strict';
@@ -76,6 +77,15 @@
       '  position: fixed; left: 0; right: 0; z-index: 100;',
       '  background: #ffffff;',
       '  box-shadow: 0 2px 5px rgba(0,0,0,0.15);',
+      '}',
+      // ▼ モバイルだけ横1段＋横スクロール（折り返して積み重ならないようにする）
+      '#' + TAB_BAR_ID + '.ktab-bar--mobile {',
+      '  flex-wrap: nowrap;',
+      '  overflow-x: auto;',
+      '  -webkit-overflow-scrolling: touch;',
+      '}',
+      '#' + TAB_BAR_ID + '.ktab-bar--mobile .ktab-btn {',
+      '  flex: 0 0 auto;',
       '}',
     ].join('\n');
 
@@ -278,6 +288,7 @@
 
     const bar = document.createElement('div');
     bar.id = TAB_BAR_ID;
+    if (isMobile) bar.classList.add('ktab-bar--mobile'); // モバイルは横1段＋横スクロール
 
     tabs.forEach(function (tab, index) {
       const btn = document.createElement('button');
