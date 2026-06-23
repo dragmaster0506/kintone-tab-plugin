@@ -1,345 +1,396 @@
 /**
- * タブ表示プラグイン 本体（PC・モバイル共通）
+ * タブ表示プラグイン desktop.js（A案：全フィールド常時表示＋スクロールジャンプ）
  *
- * ■ 仕組み
- *   「要素IDが設定されたラベル」をタブの境目として画面を自動分割。
- *   タブ名＝ラベルのテキスト。最初の境目ラベルより上のフィールドは常に表示。
- *   タブバーは設定画面で指定した要素IDのスペースに表示（無ければヘッダーに表示）。
+ * 【やること】
+ *  - 設定で選んだラベルを「タブ」にする
+ *  - タブを押すと、そのラベルの位置へスクロールして移動する（中身は隠さない）
+ *  - スクロールでタブバーが画面外に出たら、画面上部48pxに固定タブバーを出す
+ *  - いま見えている位置のタブを自動でハイライトする
  *
- * ■ 機能
- *   ・「すべて表示」タブ（設定でON/OFF・名前変更可）
- *   ・スクロール追従（タブバーが画面外に出たら上部に固定表示）
- *   ・キーボードでタブ移動（Ctrl + ←／→。設定でON/OFF可）
- *   ・モバイルではタブバーを横1段＋横スクロール表示（折り返して積み重ならない）
+ * 【設定値（config）】
+ *  - tabSpaceId       … タブバーを置くスペースの要素ID
+ *  - tabs             … [{elementId, text}, ...] を JSON文字列にしたもの
+ *  - showAllTab       … 「すべて表示」タブを使うか ('true'/'false')
+ *  - allTabName       … 「すべて表示」タブの名前
+ *  - keyboardShortcut … Ctrl+←/→ でタブ移動するか ('true'/'false')
+ *
+ * 【重要な前提（前セッションで判明した事実）】
+ *  - ラベルには HTMLの id属性が付かない → getElementById では掴めない
+ *  - そのため「ラベルのテキスト」で照合してDOM要素を探す
+ *  - モバイルは window.scrollTo が効かない → 専用のmainコンテナを動かす
  */
-(function (PLUGIN_ID) {
+((PLUGIN_ID) => {
   'use strict';
 
-  // ============================================================
-  // 設定画面で保存された値を読み込む（未設定の項目は初期値を使う）
-  // ※設定値はすべて文字列で保存されるので、ON/OFFは 'true'/'false' の文字列比較
-  // ============================================================
-  const rawConfig = kintone.plugin.app.getConfig(PLUGIN_ID) || {};
-  const CONFIG = {
-    tabSpaceId: rawConfig.tabSpaceId || 'tab_space', // タブバーを置くスペースの要素ID
-    // 設定画面でチェックされた「タブの境目ラベル」の要素ID一覧
-    // （カンマ区切り文字列で保存されているので配列に変換）
-    tabLabelIds: (rawConfig.tabLabelIds || '').split(',').filter(Boolean),
-    showAllTab: rawConfig.showAllTab !== 'false',     // 「すべて表示」タブを出すか
-    allTabName: rawConfig.allTabName || 'すべて',     // 「すべて表示」タブの名前
-    keyboardShortcut: rawConfig.keyboardShortcut !== 'false', // Ctrl+←→を使うか
-  };
+  // ====== 固定タブバーの位置（画面上部からの距離） ======
+  const FIXED_TOP = 48; // px（PC・モバイル共通）
 
-  const TAB_BAR_ID = 'ktab-bar';
-  const STYLE_ID = 'ktab-style';
+  // ====== 選択中タブの背景色 ======
+  const ACTIVE_BG = '#3498db';
+  const ACTIVE_COLOR = '#ffffff';
 
-  // ▼ 固定表示するときの画面上端からの距離（px）
-  const FIXED_TOP_PC = 48;
-  const FIXED_TOP_MOBILE = 0;
+  // ====== モバイルのスクロール領域セレクタ（動作中コードより） ======
+  const MOBILE_SCROLL_SEL =
+    '#main > div > div > div.gaia-mobile-v2-viewpanel-viewpanelcontainer > div > main';
 
-  // 画面遷移（詳細→編集など）しても同じタブを開いたままにするための記憶
-  let lastActiveIndex = 0;
+  // ------------------------------------------------------------
+  // 設定を読み込む
+  // ------------------------------------------------------------
+  const config = kintone.plugin.app.getConfig(PLUGIN_ID);
+  if (!config) return;
 
-  // 画面上の要素やタブ構成をまとめて記憶しておく場所
-  const state = {
-    bar: null,
-    placeholder: null,
-    isMobile: false,
-    tabs: [],
-  };
+  const tabSpaceId = config.tabSpaceId || 'tab_space';
+  const useAllTab = (config.showAllTab !== 'false');
+  const allTabName = config.allTabName || 'すべて';
+  const useKeyboard = (config.keyboardShortcut !== 'false');
 
-  // ============================================================
-  // デザイン（CSS）を1回だけページに注入する
-  // ============================================================
-  function injectStyle() {
-    if (document.getElementById(STYLE_ID)) return;
+  let tabs = [];
+  try {
+    tabs = JSON.parse(config.tabs || '[]');
+    if (!Array.isArray(tabs)) tabs = [];
+  } catch (e) {
+    tabs = [];
+  }
+  if (!tabs.length) return; // タブが無ければ何もしない
 
-    const css = [
-      '#' + TAB_BAR_ID + ' {',
-      '  display: flex; align-items: flex-end; gap: 2px; flex-wrap: wrap;',
-      '  width: 100%; box-sizing: border-box;',
-      '  padding: 8px 8px 0;',
-      '  border-bottom: 2px solid #1e73be;',
-      '}',
-      '.ktab-btn {',
-      '  padding: 9px 22px; font-size: 14px;',
-      '  color: #767676; background: #eef1f3;',
-      '  border: 1px solid #d4d4d4; border-bottom: none;',
-      '  border-radius: 6px 6px 0 0;',
-      '  cursor: pointer; white-space: nowrap;',
-      '}',
-      '.ktab-btn:hover { background: #e2e6e9; }',
-      '.ktab-btn--active, .ktab-btn--active:hover {',
-      '  background: #1e73be; color: #ffffff;',
-      '  border-color: #1e73be; font-weight: bold;',
-      '}',
-      '.ktab-bar--fixed {',
-      '  position: fixed; left: 0; right: 0; z-index: 100;',
-      '  background: #ffffff;',
-      '  box-shadow: 0 2px 5px rgba(0,0,0,0.15);',
-      '}',
-      // ▼ モバイルだけ横1段＋横スクロール（折り返して積み重ならないようにする）
-      '#' + TAB_BAR_ID + '.ktab-bar--mobile {',
-      '  flex-wrap: nowrap;',
-      '  overflow-x: auto;',
-      '  -webkit-overflow-scrolling: touch;',
-      '}',
-      '#' + TAB_BAR_ID + '.ktab-bar--mobile .ktab-btn {',
-      '  flex: 0 0 auto;',
-      '}',
-    ].join('\n');
+  // ====== ユーティリティ ======
 
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = css;
-    document.head.appendChild(style);
+  // 文字列を比較用に正規化（空白除去・小文字化）
+  const normalize = (s) => (s || '').toString().trim().replace(/\s+/g, '').toLowerCase();
+
+  // いまモバイル画面かどうか
+  const isMobile = () => location.pathname.indexOf('/k/m/') === 0 || !!document.querySelector(MOBILE_SCROLL_SEL);
+
+  // スクロール対象の要素を返す（モバイル=専用main / PC=scrollingElement）
+  function getScrollContainer() {
+    return document.querySelector(MOBILE_SCROLL_SEL) || document.scrollingElement || document.documentElement;
   }
 
-  // ============================================================
-  // スクロール追従
-  // ============================================================
-  function onScroll() {
-    const bar = state.bar;
-    const ph = state.placeholder;
-    if (!bar || !ph || !document.body.contains(ph)) return;
+  // ====== ラベル要素をテキストで探す ======
+  // メモのDOM構造：.control-value-label-gaia の中にラベルテキストがある
+  // 行全体は .row-gaia（ジャンプ先として有力）
+  function findLabelElement(labelText) {
+    const target = normalize(labelText);
 
-    const topOffset = state.isMobile ? FIXED_TOP_MOBILE : FIXED_TOP_PC;
-    const phTop = ph.getBoundingClientRect().top;
-
-    if (phTop < topOffset) {
-      if (!bar.classList.contains('ktab-bar--fixed')) {
-        ph.style.height = bar.offsetHeight + 'px';
-        bar.classList.add('ktab-bar--fixed');
-        bar.style.top = topOffset + 'px';
+    // ラベルのテキスト表示部分を全部集める
+    const candidates = document.querySelectorAll('.control-value-label-gaia');
+    for (const el of candidates) {
+      if (normalize(el.innerText) === target) {
+        // 行全体（.row-gaia）を返す。無ければ要素自身
+        return el.closest('.row-gaia') || el.closest('.control-label-field-gaia') || el;
       }
+    }
+    return null;
+  }
+
+  // ====== スクロール位置の計算とジャンプ ======
+  function scrollToLabel(labelText) {
+    const anchor = findLabelElement(labelText);
+    if (!anchor) return;
+
+    const container = getScrollContainer();
+
+    // 固定バーが表示中ならその高さも避ける
+    const fixedBar = document.getElementById('ktab-fixed-bar');
+    const fixedShown = fixedBar && fixedBar.dataset.state === 'shown';
+    const fixedHeight = fixedShown ? fixedBar.offsetHeight : 0;
+    const offset = FIXED_TOP + fixedHeight;
+
+    if (container === document.scrollingElement || container === document.documentElement) {
+      // PC：ページ全体をスクロール
+      const top = anchor.getBoundingClientRect().top + window.pageYOffset - offset;
+      window.scrollTo({ top: top, behavior: 'smooth' });
     } else {
-      if (bar.classList.contains('ktab-bar--fixed')) {
-        bar.classList.remove('ktab-bar--fixed');
-        bar.style.top = '';
-        ph.style.height = '0px';
-      }
+      // モバイル：専用コンテナをスクロール（コンテナ基準の相対座標）
+      const top =
+        anchor.getBoundingClientRect().top -
+        container.getBoundingClientRect().top +
+        container.scrollTop -
+        offset;
+      container.scrollTo({ top: top, behavior: 'smooth' });
     }
   }
-  window.addEventListener('scroll', onScroll, { passive: true });
-  window.addEventListener('resize', onScroll, { passive: true });
 
-  // ============================================================
-  // キーボードでタブ移動（Ctrl + ←／→）
-  // ============================================================
-  function isTypingTarget(el) {
-    if (!el) return false;
-    const tag = (el.tagName || '').toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select' ||
-      el.isContentEditable === true;
-  }
+  // ====== タブボタンを作る ======
+  function createTabButton(tab, isAllTab) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ktab-button';
+    btn.textContent = tab.text;
+    btn.dataset.elementId = tab.elementId || '';
+    btn.dataset.text = tab.text || '';
+    btn.dataset.isAll = isAllTab ? 'true' : 'false';
 
-  document.addEventListener('keydown', function (e) {
-    if (!CONFIG.keyboardShortcut) return;
-    if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    if (isTypingTarget(e.target)) return; // 文字入力中は邪魔しない
+    Object.assign(btn.style, {
+      height: '34px',
+      padding: '0 14px',
+      borderRadius: '8px',
+      margin: '3px',
+      whiteSpace: 'nowrap',
+      border: '1px solid #c8d0d8',
+      background: '#ffffff',
+      color: '#333333',
+      cursor: 'pointer',
+      fontSize: '14px'
+    });
 
-    const tabs = state.tabs;
-    if (!tabs.length || !state.bar || !document.body.contains(state.bar)) return;
-
-    e.preventDefault();
-    const direction = (e.key === 'ArrowRight') ? 1 : -1;
-    const nextIndex = (lastActiveIndex + direction + tabs.length) % tabs.length;
-    showTab(state.isMobile, tabs, nextIndex);
-  });
-
-  // ============================================================
-  // タブ構成の組み立て
-  // ============================================================
-  function getAppId(isMobile) {
-    return isMobile ? kintone.mobile.app.getId() : kintone.app.getId();
-  }
-
-  async function getLayout(isMobile) {
-    const response = await kintone.api(
-      kintone.api.url('/k/v1/app/form/layout', true),
-      'GET',
-      { app: getAppId(isMobile) }
-    );
-    return response.layout;
-  }
-
-  function toPlainText(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    return (doc.body.textContent || '').trim();
-  }
-
-  function buildTabs(layout) {
-    const tabs = [];
-    let currentTab = null;
-
-    function handleField(field) {
-      // 設定画面でチェックされたラベル ＝ 新しいタブの開始
-      // チェックされていない要素ID付きラベルは「純粋なラベル」として
-      // 下の共通処理に流れ、属するタブと一緒に表示/非表示される
-      if (field.type === 'LABEL' && field.elementId &&
-          CONFIG.tabLabelIds.indexOf(field.elementId) !== -1) {
-        currentTab = {
-          name: toPlainText(field.label) || 'タブ' + (tabs.length + 1),
-          labelId: field.elementId,
-          codes: [],
-        };
-        tabs.push(currentTab);
-        return;
-      }
-      // タブバー設置用のスペースは切り替え対象から除外
-      if (field.type === 'SPACER' && field.elementId === CONFIG.tabSpaceId) {
-        return;
-      }
-      const id = field.code || field.elementId;
-      if (id && currentTab) {
-        currentTab.codes.push(id);
-      }
-    }
-
-    layout.forEach(function (row) {
-      if (row.type === 'ROW') {
-        row.fields.forEach(handleField);
-      } else if (row.type === 'GROUP' || row.type === 'SUBTABLE') {
-        if (currentTab && row.code) {
-          currentTab.codes.push(row.code);
+    btn.addEventListener('click', () => {
+      if (isAllTab) {
+        // 「すべて表示」タブ：一番上へ戻る
+        const container = getScrollContainer();
+        if (container === document.scrollingElement || container === document.documentElement) {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          container.scrollTo({ top: 0, behavior: 'smooth' });
         }
-      }
-    });
-
-    // 「すべて表示」タブを末尾に追加（設定でONのときだけ）
-    if (CONFIG.showAllTab && tabs.length > 0) {
-      tabs.push({ isAll: true, name: CONFIG.allTabName });
-    }
-
-    return tabs;
-  }
-
-  // ============================================================
-  // 表示の切り替え
-  // ============================================================
-  function setFieldShown(isMobile, code, isShown) {
-    try {
-      if (isMobile) {
-        kintone.mobile.app.record.setFieldShown(code, isShown);
       } else {
-        kintone.app.record.setFieldShown(code, isShown);
+        scrollToLabel(tab.text);
       }
-    } catch (e) {
-      console.warn('表示切替スキップ:', code, e.message);
-    }
-  }
-
-  function showTab(isMobile, tabs, activeIndex) {
-    const isAllMode = !!tabs[activeIndex].isAll;
-
-    tabs.forEach(function (tab, index) {
-      if (tab.isAll) return;
-
-      // 境目ラベル：すべて表示中は「見出し」として出す／通常は隠す
-      setFieldShown(isMobile, tab.labelId, isAllMode);
-
-      const isShown = isAllMode || (index === activeIndex);
-      tab.codes.forEach(function (code) {
-        setFieldShown(isMobile, code, isShown);
-      });
+      highlightTab(btn);
     });
 
-    lastActiveIndex = activeIndex;
-    updateTabStyles(activeIndex);
+    return btn;
   }
 
-  function updateTabStyles(activeIndex) {
-    if (!state.bar) return;
-    state.bar.querySelectorAll('.ktab-btn').forEach(function (btn, index) {
-      btn.classList.toggle('ktab-btn--active', index === activeIndex);
+  // ====== ハイライト処理 ======
+  function highlightTab(activeBtn) {
+    document.querySelectorAll('.ktab-button').forEach((b) => {
+      const on = (b === activeBtn) ||
+                 (activeBtn && b.dataset.elementId === activeBtn.dataset.elementId &&
+                  b.dataset.text === activeBtn.dataset.text);
+      b.style.background = on ? ACTIVE_BG : '#ffffff';
+      b.style.color = on ? ACTIVE_COLOR : '#333333';
+      b.style.borderColor = on ? ACTIVE_BG : '#c8d0d8';
     });
   }
 
-  // ============================================================
-  // タブバーの作成と設置
-  // ============================================================
-  function createTabBar(isMobile, tabs) {
-    injectStyle();
+  // elementId / text で全タブ（通常バー＋固定バー）をハイライト
+  function highlightByText(labelText) {
+    const target = normalize(labelText);
+    document.querySelectorAll('.ktab-button').forEach((b) => {
+      const on = normalize(b.dataset.text) === target;
+      b.style.background = on ? ACTIVE_BG : '#ffffff';
+      b.style.color = on ? ACTIVE_COLOR : '#333333';
+      b.style.borderColor = on ? ACTIVE_BG : '#c8d0d8';
+    });
+  }
 
-    const oldBar = document.getElementById(TAB_BAR_ID);
-    if (oldBar) oldBar.remove();
-    const oldPh = document.getElementById(TAB_BAR_ID + '-ph');
-    if (oldPh) oldPh.remove();
-
-    // 設置先：設定した要素IDのスペースを最優先で探す
-    let space = isMobile
-      ? kintone.mobile.app.record.getSpaceElement(CONFIG.tabSpaceId)
-      : kintone.app.record.getSpaceElement(CONFIG.tabSpaceId);
-
-    // スペースが無いアプリではヘッダー部分に表示（フォールバック）
-    if (!space) {
-      space = isMobile
-        ? kintone.mobile.app.getHeaderSpaceElement()
-        : kintone.app.record.getHeaderMenuSpaceElement();
+  // ====== タブバーの中身を作る（通常バー・固定バー共通） ======
+  function buildTabButtons(host) {
+    if (useAllTab) {
+      host.appendChild(createTabButton({ text: allTabName }, true));
     }
-    if (!space) return;
+    tabs.forEach((t) => host.appendChild(createTabButton(t, false)));
+  }
 
-    space.style.width = '100%';
+  // ====== タブバーを置くスペース要素を取得 ======
+  function getTabSpaceElement() {
+    // PC
+    if (kintone.app && kintone.app.record && kintone.app.record.getSpaceElement) {
+      const el = kintone.app.record.getSpaceElement(tabSpaceId);
+      if (el) return el;
+    }
+    // モバイル
+    if (kintone.mobile && kintone.mobile.app && kintone.mobile.app.record &&
+        kintone.mobile.app.record.getSpaceElement) {
+      const el = kintone.mobile.app.record.getSpaceElement(tabSpaceId);
+      if (el) return el;
+    }
+    // フォールバック：user-js- 接頭辞
+    return document.getElementById('user-js-' + tabSpaceId);
+  }
 
-    const placeholder = document.createElement('div');
-    placeholder.id = TAB_BAR_ID + '-ph';
-    placeholder.style.height = '0px';
+  // ====== 固定タブバー（上部48px） ======
+  function ensureFixedBar() {
+    if (document.getElementById('ktab-fixed-bar')) return;
 
     const bar = document.createElement('div');
-    bar.id = TAB_BAR_ID;
-    if (isMobile) bar.classList.add('ktab-bar--mobile'); // モバイルは横1段＋横スクロール
-
-    tabs.forEach(function (tab, index) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ktab-btn';
-      btn.textContent = tab.name;
-      btn.addEventListener('click', function () {
-        showTab(isMobile, tabs, index);
-      });
-      bar.appendChild(btn);
+    bar.id = 'ktab-fixed-bar';
+    Object.assign(bar.style, {
+      position: 'fixed',
+      top: FIXED_TOP + 'px',
+      left: '0',
+      right: '0',
+      zIndex: '1000',
+      background: '#ffffff',
+      boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+      display: 'flex',
+      flexWrap: 'wrap',
+      justifyContent: 'center',
+      gap: '0',
+      padding: '4px 8px',
+      boxSizing: 'border-box',
+      transform: 'translateY(-150%)',
+      transition: 'transform 180ms ease-out',
+      pointerEvents: 'none'
     });
+    bar.dataset.state = 'hidden';
 
-    space.appendChild(placeholder);
-    space.appendChild(bar);
-
-    state.bar = bar;
-    state.placeholder = placeholder;
-    state.isMobile = isMobile;
-    state.tabs = tabs;
+    buildTabButtons(bar);
+    document.body.appendChild(bar);
   }
 
-  // ============================================================
-  // イベント登録（詳細・新規作成・編集 × PC・モバイル）
-  // ============================================================
-  const events = [
+  function setFixedBarState(show) {
+    const bar = document.getElementById('ktab-fixed-bar');
+    if (!bar) return;
+    bar.style.transform = show ? 'translateY(0)' : 'translateY(-150%)';
+    bar.style.pointerEvents = show ? 'auto' : 'none';
+    bar.dataset.state = show ? 'shown' : 'hidden';
+  }
+
+  // ====== いま見えているラベルを判定してハイライト ======
+  function updateActiveByScroll() {
+    const container = getScrollContainer();
+    const baseTop = (container === document.scrollingElement || container === document.documentElement)
+      ? 0
+      : container.getBoundingClientRect().top;
+    const lineY = baseTop + FIXED_TOP + 10; // この高さの線を超えた最後のラベルが「現在地」
+
+    let current = null;
+    const all = useAllTab ? [{ text: allTabName, isAll: true }].concat(tabs) : tabs.slice();
+
+    for (const t of tabs) {
+      const el = findLabelElement(t.text);
+      if (!el) continue;
+      const top = el.getBoundingClientRect().top;
+      if (top - 1 <= lineY) {
+        current = t.text; // 線を超えた＝そこまでスクロール済み
+      }
+    }
+
+    if (current) {
+      highlightByText(current);
+    } else if (useAllTab) {
+      highlightByText(allTabName);
+    }
+  }
+
+  // ====== スクロール監視のセットアップ ======
+  function setupScrollWatch(spaceEl) {
+    const container = getScrollContainer();
+
+    // スペースの絶対位置（これより下にスクロールしたら固定バーを出す）
+    const getSpaceBottom = () => {
+      const rect = spaceEl.getBoundingClientRect();
+      if (container === document.scrollingElement || container === document.documentElement) {
+        return rect.bottom + window.pageYOffset;
+      }
+      return rect.bottom - container.getBoundingClientRect().top + container.scrollTop;
+    };
+
+    const onScroll = () => {
+      const y = (container === document.scrollingElement || container === document.documentElement)
+        ? window.pageYOffset
+        : container.scrollTop;
+
+      // スペースが画面外（上）に出たら固定バーを表示
+      const spaceBottom = getSpaceBottom();
+      if (y > spaceBottom - FIXED_TOP) {
+        setFixedBarState(true);
+      } else {
+        setFixedBarState(false);
+      }
+
+      updateActiveByScroll();
+    };
+
+    // PC は window、モバイルは専用コンテナ。両方に capture で登録
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    if (container && container.addEventListener) {
+      container.addEventListener('scroll', onScroll, { passive: true });
+    }
+
+    // 初回判定
+    setTimeout(onScroll, 100);
+  }
+
+  // ====== キーボード操作（Ctrl + ← / →） ======
+  function setupKeyboard() {
+    if (!useKeyboard) return;
+    document.addEventListener('keydown', (e) => {
+      if (!e.ctrlKey) return;
+      // 文字入力中は無視
+      const tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable) return;
+
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+
+      // 現在ハイライト中のタブを探す
+      const list = Array.from(document.querySelectorAll('#ktab-fixed-bar .ktab-button, .ktab-base-bar .ktab-button'));
+      const uniqueTexts = tabs.map((t) => t.text);
+      const activeText = (() => {
+        const active = document.querySelector('.ktab-button[style*="' + ACTIVE_BG.replace('#', '') + '"]');
+        return active ? active.dataset.text : uniqueTexts[0];
+      })();
+
+      let idx = uniqueTexts.indexOf(activeText);
+      if (idx === -1) idx = 0;
+      idx = e.key === 'ArrowRight' ? Math.min(idx + 1, uniqueTexts.length - 1) : Math.max(idx - 1, 0);
+      scrollToLabel(uniqueTexts[idx]);
+      highlightByText(uniqueTexts[idx]);
+    });
+  }
+
+  // ====== メインのセットアップ ======
+  function setup() {
+    const spaceEl = getTabSpaceElement();
+
+    // タブバーを置く場所：スペースがあればそこ、無ければヘッダー
+    let baseHost = spaceEl;
+    if (!baseHost) {
+      if (kintone.app && kintone.app.record && kintone.app.record.getHeaderMenuSpaceElement) {
+        baseHost = kintone.app.record.getHeaderMenuSpaceElement();
+      }
+    }
+    if (!baseHost) return;
+
+    // 二重生成を防ぐ
+    if (!baseHost.querySelector('.ktab-button')) {
+      baseHost.classList.add('ktab-base-bar');
+      Object.assign(baseHost.style, {
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '0',
+        width: '100%',
+        boxSizing: 'border-box'
+      });
+      buildTabButtons(baseHost);
+    }
+
+    ensureFixedBar();
+    setupScrollWatch(spaceEl || baseHost);
+    setupKeyboard();
+  }
+
+  // ====== 後片付け（一覧に戻ったときなど） ======
+  function teardown() {
+    const bar = document.getElementById('ktab-fixed-bar');
+    if (bar) bar.remove();
+  }
+
+  // ====== kintoneイベント登録 ======
+  const showEvents = [
     'app.record.detail.show',
     'app.record.create.show',
     'app.record.edit.show',
     'mobile.app.record.detail.show',
     'mobile.app.record.create.show',
-    'mobile.app.record.edit.show',
+    'mobile.app.record.edit.show'
   ];
 
-  kintone.events.on(events, async function (event) {
-    const isMobile = (event.type.indexOf('mobile.') === 0);
-
-    try {
-      const layout = await getLayout(isMobile);
-      const tabs = buildTabs(layout);
-      if (tabs.length === 0) return event; // 境目ラベルが無いアプリでは何もしない
-
-      createTabBar(isMobile, tabs);
-
-      const startIndex = (lastActiveIndex < tabs.length) ? lastActiveIndex : 0;
-      showTab(isMobile, tabs, startIndex);
-
-    } catch (e) {
-      console.error('タブ表示プラグインの初期化に失敗しました:', e);
-    }
-
+  kintone.events.on(showEvents, (event) => {
+    // 描画が整うのを少し待ってからセットアップ
+    setTimeout(setup, 200);
     return event;
   });
 
-})(window.__TAB_PLUGIN_ID__ || kintone.$PLUGIN_ID);
+  kintone.events.on(['app.record.index.show', 'mobile.app.record.index.show'], (event) => {
+    teardown();
+    return event;
+  });
+
+  window.addEventListener('hashchange', teardown);
+
+})(window.__TAB_PLUGIN_ID__ || (typeof kintone !== 'undefined' && kintone.$PLUGIN_ID));
